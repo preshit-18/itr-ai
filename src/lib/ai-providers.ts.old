@@ -1,0 +1,365 @@
+import type { WizardFormData, ITRAnalysisResult, AIProvider } from '@/types'
+import { calculateTaxOldRegime, calculateTaxNewRegime, calculateSurcharge } from '@/data/itr-data'
+
+// ─── System Prompt ─────────────────────────────────────────────────────────────
+
+export function buildSystemPrompt(): string {
+  return `You are an expert Indian Chartered Accountant and Income Tax advisor with deep knowledge of Indian Income Tax laws for FY 2024-25 (AY 2025-26). You help taxpayers identify the correct ITR form and understand their tax obligations.
+
+## ITR Form Eligibility Rules (India FY 2024-25)
+
+**ITR-1 (Sahaj):** Only for RESIDENT INDIVIDUALS with:
+- Total income ≤ ₹50 lakh
+- Income from salary/pension ONLY
+- Income from one house property
+- Income from other sources (interest, dividends)
+- Agricultural income ≤ ₹5,000
+- NOT applicable if: NRI/RNOR, capital gains, business income, foreign assets, director in company, unlisted shares, income > ₹50L
+
+**ITR-2:** For INDIVIDUALS and HUFs with:
+- All ITR-1 sources PLUS capital gains, foreign income/assets
+- Director in company or holder of unlisted shares
+- NRI/RNOR residents
+- Agricultural income > ₹5,000
+- Income > ₹50 lakh
+- NOT for: business/profession income
+
+**ITR-3:** For INDIVIDUALS and HUFs with:
+- Proprietary business or profession income
+- Partner in a firm (in addition to other income)
+- All types of income
+
+**ITR-4 (Sugam):** For RESIDENT INDIVIDUAL/HUF/FIRM (not LLP) with:
+- Presumptive business income under Sec 44AD (turnover ≤ ₹3 Cr for business)
+- Presumptive professional income under Sec 44ADA (gross receipts ≤ ₹75 lakh for professionals like doctors, lawyers, CAs, etc.)
+- Transport operators under Sec 44AE
+- Total income ≤ ₹50 lakh
+- NOT if: capital gains, foreign assets/income, director in company, unlisted shares
+
+**ITR-5:** For FIRMS, LLPs, AOPs, BOIs, Cooperative Societies, Local Authorities
+
+**ITR-6:** For COMPANIES (other than those claiming Sec 11 exemption)
+
+**ITR-7:** For TRUSTS, political parties, institutions under Sec 139(4A) to (4F)
+
+## Tax Slabs FY 2024-25
+
+**New Regime (default after Budget 2023):**
+- 0%: up to ₹3L | 5%: ₹3L-6L | 10%: ₹6L-9L | 15%: ₹9L-12L | 20%: ₹12L-15L | 30%: above ₹15L
+- Standard deduction: ₹75,000 (salaried), ₹50,000 (pension)
+- Rebate u/s 87A: ₹25,000 (if income ≤ ₹7L)
+- No deductions under 80C, 80D, etc.
+
+**Old Regime:**
+- 0%: up to ₹2.5L (₹3L for 60+, ₹5L for 80+) | 5%: next ₹2.5L | 20%: next ₹5L | 30%: above ₹10L
+- Rebate u/s 87A: ₹12,500 (if income ≤ ₹5L)
+- All deductions apply (80C max ₹1.5L, 80D, HRA, etc.)
+
+**Surcharge:** 10% (income 50L-1Cr) | 15% (1Cr-2Cr) | 25% (2Cr-5Cr) | 37% (>5Cr)
+**Health & Education Cess:** 4% on (tax + surcharge)
+
+## Response Format
+Respond with ONLY a valid JSON object (no markdown, no preamble). Use this exact schema:
+{
+  "recommendedForm": "ITR-X",
+  "confidence": "high|medium|low",
+  "reasoning": "Detailed legal reasoning for the form selection",
+  "eligibilitySummary": "One-sentence summary of why this form applies",
+  "keyFactors": ["factor1", "factor2", "factor3"],
+  "taxEstimate": {
+    "grossIncome": 0,
+    "totalDeductions": 0,
+    "taxableIncome": 0,
+    "estimatedTax": 0,
+    "surcharge": 0,
+    "cess": 0,
+    "totalTaxLiability": 0,
+    "tdsPaid": 0,
+    "netPayable": 0,
+    "isRefund": false,
+    "regime": "new|old"
+  },
+  "filingDeadline": "31 July 2025 (for non-audit cases)",
+  "filingSteps": [
+    { "step": 1, "title": "Register/Login", "description": "...", "link": "https://www.incometax.gov.in" }
+  ],
+  "documentsRequired": ["Form 16", "..."],
+  "importantNotes": ["note1", "note2"],
+  "alternativeForms": [{ "form": "ITR-X", "reason": "..." }]
+}`
+}
+
+// ─── Prompt Builder ────────────────────────────────────────────────────────────
+
+export function buildUserPrompt(data: WizardFormData): string {
+  return `Analyse this taxpayer's profile and provide ITR form recommendation for FY ${data.financialYear}:
+
+TAXPAYER PROFILE:
+- Entity Type: ${data.entityType}
+- Residency Status: ${data.residencyStatus}
+- Age: ${data.age} years
+- First-time filer: ${data.isFirstTime}
+- Financial Year: ${data.financialYear}
+
+INCOME DETAILS:
+- Income Sources: ${data.incomeSources.join(', ') || 'Not specified'}
+- Salary/Pension Income: ₹${data.salaryIncome || 0}
+- House Property Income: ₹${data.housePropertyIncome || 0}
+- Business/Profession Income: ₹${data.businessIncome || 0}
+- Short-Term Capital Gains: ₹${data.capitalGainsShortTerm || 0}
+- Long-Term Capital Gains: ₹${data.capitalGainsLongTerm || 0}
+- Other Income: ₹${data.otherIncome || 0}
+- Foreign Income: ₹${data.foreignIncome || 0}
+- Agricultural Income: ₹${data.agriculturalIncome || 0}
+- Total Gross Income: ₹${data.totalIncome || 0}
+
+SPECIAL SCENARIOS:
+- Has Foreign Assets: ${data.hasForeignAssets}
+- Has Foreign Income: ${data.hasForeignIncome}
+- Director in Company: ${data.isDirectorInCompany}
+- Holds Unlisted Shares: ${data.hasUnlistedShares}
+- Partner in Firm: ${data.isPartnerInFirm}
+- Trust/Institution: ${data.isTrustOrInstitution}
+- Company: ${data.isCompany}
+- LLP: ${data.isLLP}
+
+DEDUCTIONS & TAX:
+- Preferred Tax Regime: ${data.taxRegime || 'Not specified'}
+- Section 80C Deductions: ₹${data.deduction80C || 0}
+- Section 80D (Health Insurance): ₹${data.deduction80D || 0}
+- Other Deductions: ₹${data.deductionOther || 0}
+- TDS Already Paid: ₹${data.tdsPaid || 0}
+- Advance Tax Paid: ₹${data.advanceTaxPaid || 0}
+
+Please provide the complete JSON analysis. For tax calculation, use actual tax slabs. If first-time filer, include extra guidance in filingSteps.`
+}
+
+// ─── Claude Provider ──────────────────────────────────────────────────────────
+
+async function callClaude(systemPrompt: string, userPrompt: string): Promise<string> {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': process.env.ANTHROPIC_API_KEY || '',
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 4096,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
+    }),
+  })
+
+  if (!response.ok) {
+    const error = await response.text()
+    throw new Error(`Claude API error: ${response.status} - ${error}`)
+  }
+
+  const data = await response.json()
+  return data.content[0]?.text || ''
+}
+
+// ─── Gemini Provider ──────────────────────────────────────────────────────────
+
+// async function callGemini(systemPrompt: string, userPrompt: string): Promise<string> {
+//   const apiKey = process.env.GEMINI_API_KEY
+//   const geminiSystemPrompt = `You are an Indian CA and tax advisor. Analyse the taxpayer profile and return ONLY a valid JSON object with these exact keys: recommendedForm, confidence, reasoning, eligibilitySummary, keyFactors, taxEstimate (with grossIncome, totalDeductions, taxableIncome, estimatedTax, surcharge, cess, totalTaxLiability, tdsPaid, netPayable, isRefund, regime), filingDeadline, filingSteps (array of {step, title, description, link}), documentsRequired, importantNotes, alternativeForms. No markdown, no text outside the JSON.`
+//   const response = await fetch(
+//     `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`,
+//     {
+//       method: 'POST',
+//       headers: { 'Content-Type': 'application/json' },
+//       body: JSON.stringify({
+//         system_instruction: { parts: [{ text: systemPrompt }] },
+//         contents: [{ parts: [{ text: userPrompt }] }],
+//         generationConfig: {
+//           temperature: 0.1,
+//           maxOutputTokens: 8192,
+//           responseMimeType: 'application/json',
+//         },
+//       }),
+//     }
+//   )
+
+//   if (!response.ok) {
+//     const error = await response.text()
+//     throw new Error(`Gemini API error: ${response.status} - ${error}`)
+//   }
+
+//   const data = await response.json()
+//   return data.candidates?.[0]?.content?.parts?.[0]?.text || ''
+// }
+
+// ─── Gemini Provider (v1 Stable Compatible) ──────────────────────────────────
+
+// ─── Gemini Provider (v1 Stable Compatible) ──────────────────────────────────
+
+async function callGemini(systemPrompt: string, userPrompt: string, retries = 3): Promise<string> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  const URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+
+  for (let i = 0; i < retries; i++) {
+    try {
+      const response = await fetch(URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents: [{ parts: [{ text: userPrompt }] }],
+          generationConfig: {
+            temperature: 0.1,
+            maxOutputTokens: 8192,
+            responseMimeType: 'application/json', // camelCase in v1beta
+          },
+        }),
+      });
+
+      if (response.status === 503 || response.status === 429) {
+        const waitTime = Math.pow(2, i) * 1000;
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        continue;
+      }
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Gemini API error: ${response.status} - ${error}`);
+      }
+
+      const data = await response.json();
+      return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+    } catch (err) {
+      if (i === retries - 1) throw err;
+    }
+  }
+  return '';
+}
+// ─── OpenAI Provider ──────────────────────────────────────────────────────────
+
+async function callOpenAI(systemPrompt: string, userPrompt: string): Promise<string> {
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o',
+      temperature: 0.1,
+      max_tokens: 4096,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+    }),
+  })
+
+  if (!response.ok) {
+    const error = await response.text()
+    throw new Error(`OpenAI API error: ${response.status} - ${error}`)
+  }
+
+  const data = await response.json()
+  return data.choices?.[0]?.message?.content || ''
+}
+
+// ─── Parse AI Response ────────────────────────────────────────────────────────
+
+// function parseAIResponse(text: string): ITRAnalysisResult {
+//   // Strip markdown code fences if present
+//   const cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
+//   return JSON.parse(cleaned) as ITRAnalysisResult
+// }
+
+function parseAIResponse(text: string): ITRAnalysisResult {
+  const cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
+  try {
+    return JSON.parse(cleaned) as ITRAnalysisResult
+  } catch {
+    // If JSON is truncated, show a clear error instead of a cryptic position error
+    throw new Error('AI returned incomplete response. Please try again — this sometimes happens with complex profiles.')
+  }
+}
+
+// ─── Main Analysis Function ───────────────────────────────────────────────────
+
+export async function analyzeITR(
+   data: WizardFormData,
+  provider: AIProvider = 'claude'
+): Promise<ITRAnalysisResult> {
+  const systemPrompt = buildSystemPrompt()
+  const userPrompt = buildUserPrompt(data)
+ 
+  let rawText = ''
+ 
+  switch (provider) {
+    case 'claude':
+      rawText = await callClaude(systemPrompt, userPrompt)
+      break
+    case 'gemini':
+      rawText = await callGemini(systemPrompt, userPrompt)
+      break
+    case 'openai':
+      rawText = await callOpenAI(systemPrompt, userPrompt)
+      break
+    default:
+      throw new Error(`Unknown AI provider: "${provider}". Use "claude", "gemini", or "openai".`)
+  }
+ 
+  return parseAIResponse(rawText)
+}
+// ─── Streaming Chat (follow-up questions) ─────────────────────────────────────
+
+export async function streamITRChat(
+  messages: { role: 'user' | 'assistant'; content: string }[],
+  context: string,
+  provider: AIProvider = 'claude'
+): Promise<ReadableStream> {
+  const chatSystemPrompt = `You are a helpful Indian tax advisor assistant. The user has already received their ITR form recommendation. Here is their profile context:
+
+${context}
+
+Answer their follow-up questions clearly and helpfully. Reference relevant sections of the Income Tax Act when appropriate. Keep answers concise but complete. Use INR (₹) for currency.`
+
+  if (provider === 'claude') {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY || '',
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1024,
+        stream: true,
+        system: chatSystemPrompt,
+        messages,
+      }),
+    })
+    return response.body!
+  }
+
+  // For other providers, simulate streaming with a single response
+  if (provider === 'openai') {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o',
+        stream: true,
+        max_tokens: 1024,
+        messages: [{ role: 'system', content: chatSystemPrompt }, ...messages],
+      }),
+    })
+    return response.body!
+  }
+
+  throw new Error(`Streaming not supported for ${provider}`)
+}
