@@ -180,7 +180,7 @@ export function preScreenITRForm(data: WizardFormData): {
   }
 
   // Trusts
-  if (data.isTrustOrInstitution && entityType !== 'company') {
+  if (data.isTrustOrInstitution && (entityType as string) !== 'company') {
     return { form: 'ITR-7', confidence: 'high', reason: 'Trusts and institutions file ITR-7' }
   }
 
