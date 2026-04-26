@@ -79,7 +79,7 @@ export default function HomePage() {
             marginBottom: 24,
           }}>
             <span>✨</span>
-            <span>AI-Powered • FY 2024-25 Updated • Free to Use</span>
+            <span>AI-Powered • FY 2025-26 Updated • Free to Use</span>
           </div>
 
           <h1 style={{
@@ -294,7 +294,7 @@ export default function HomePage() {
             Start AI Analysis — It&apos;s Free →
           </Link>
           <p style={{ marginTop: 16, fontSize: 13, color: 'var(--ink-soft)' }}>
-            ✓ No signup required &nbsp;·&nbsp; ✓ No data stored &nbsp;·&nbsp; ✓ FY 2024-25 rules
+            ✓ No signup required &nbsp;·&nbsp; ✓ No data stored &nbsp;·&nbsp; ✓ FY 2025-26 rules
           </p>
         </div>
       </section>
@@ -315,7 +315,7 @@ export default function HomePage() {
           </a>.
         </p>
         <p style={{ marginTop: 8 }}>
-          Built with ❤️ for Indian taxpayers · FY 2024-25 (AY 2025-26)
+          Built with ❤️ for Indian taxpayers · FY 2025-26 (AY 2026-27)
         </p>
       </footer>
     </main>
